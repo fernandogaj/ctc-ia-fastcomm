@@ -1,6 +1,65 @@
 import OpenAI from 'openai';
 import { getEndpointById, listEndpoints } from '../../lib/endpoints';
 
+function normalizeText(text) {
+  return (text || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+}
+
+function findLatestUserMessage(messages) {
+  if (!Array.isArray(messages)) {
+    return '';
+  }
+
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (messages[i]?.role === 'user') {
+      return messages[i].content || '';
+    }
+  }
+
+  return '';
+}
+
+async function executeEndpoint(endpoint, payloadToSend) {
+  let responseData;
+  let statusCode;
+
+  try {
+    const headers = {
+      'Content-Type': 'application/json',
+    };
+    if (endpoint.bearer_token) {
+      headers.Authorization = `Bearer ${endpoint.bearer_token}`;
+    }
+
+    const fetchOptions = {
+      method: endpoint.method || 'POST',
+      headers,
+    };
+
+    if (payloadToSend && endpoint.method !== 'GET') {
+      fetchOptions.body =
+        typeof payloadToSend === 'string' ? payloadToSend : JSON.stringify(payloadToSend);
+    }
+
+    const response = await fetch(endpoint.endpoint_url, fetchOptions);
+    statusCode = response.status;
+    const text = await response.text();
+    try {
+      responseData = JSON.parse(text);
+    } catch (error) {
+      responseData = text;
+    }
+  } catch (error) {
+    responseData = `Falha ao chamar o endpoint: ${error.message}`;
+    statusCode = 500;
+  }
+
+  return { statusCode, responseData };
+}
+
 function mapMessages(messages) {
   return messages.map((message) => ({ role: message.role, content: message.content }));
 }
@@ -52,6 +111,64 @@ export default async function handler(req, res) {
       { role: 'system', content: systemMessage },
       ...mapMessages(messages),
     ];
+
+    const latestUserContent = normalizeText(findLatestUserMessage(messages));
+    const matchedEndpoint = endpoints.find((endpoint) => {
+      if (!endpoint?.context) {
+        return false;
+      }
+
+      const normalizedContext = normalizeText(endpoint.context);
+      return normalizedContext && latestUserContent.includes(normalizedContext);
+    });
+
+    if (matchedEndpoint) {
+      let payloadToSend = null;
+      if (matchedEndpoint.payload) {
+        try {
+          payloadToSend = JSON.parse(matchedEndpoint.payload);
+        } catch (error) {
+          payloadToSend = matchedEndpoint.payload;
+        }
+      }
+
+      const { statusCode, responseData } = await executeEndpoint(matchedEndpoint, payloadToSend);
+
+      const simulatedFunctionCall = {
+        role: 'assistant',
+        content: null,
+        function_call: {
+          name: 'callEndpoint',
+          arguments: JSON.stringify({ endpointId: matchedEndpoint.id, useStoredPayload: true }),
+        },
+      };
+
+      const followUpMessages = [
+        ...openAiMessages,
+        simulatedFunctionCall,
+        {
+          role: 'tool',
+          name: 'callEndpoint',
+          content: JSON.stringify({ statusCode, data: responseData }),
+        },
+      ];
+
+      const finalCompletion = await openai.chat.completions.create({
+        model: 'gpt-3.5-turbo-1106',
+        messages: followUpMessages,
+        temperature: 0.2,
+      });
+
+      const finalMessage = finalCompletion.choices[0]?.message;
+      res.status(200).json({
+        message: {
+          id: Date.now().toString(),
+          role: 'assistant',
+          content: finalMessage?.content || 'Não foi possível obter uma resposta.',
+        },
+      });
+      return;
+    }
 
     const functionDefinition = {
       name: 'callEndpoint',
@@ -125,37 +242,7 @@ export default async function handler(req, res) {
         }
       }
 
-      let responseData;
-      let statusCode;
-      try {
-        const headers = {
-          'Content-Type': 'application/json',
-        };
-        if (endpoint.bearer_token) {
-          headers.Authorization = `Bearer ${endpoint.bearer_token}`;
-        }
-
-        const fetchOptions = {
-          method: endpoint.method || 'POST',
-          headers,
-        };
-
-        if (payloadToSend && endpoint.method !== 'GET') {
-          fetchOptions.body = typeof payloadToSend === 'string' ? payloadToSend : JSON.stringify(payloadToSend);
-        }
-
-        const response = await fetch(endpoint.endpoint_url, fetchOptions);
-        statusCode = response.status;
-        const text = await response.text();
-        try {
-          responseData = JSON.parse(text);
-        } catch (error) {
-          responseData = text;
-        }
-      } catch (error) {
-        responseData = `Falha ao chamar o endpoint: ${error.message}`;
-        statusCode = 500;
-      }
+      const { statusCode, responseData } = await executeEndpoint(endpoint, payloadToSend);
 
       const followUpMessages = [
         ...openAiMessages,
