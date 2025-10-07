@@ -112,7 +112,8 @@ export default async function handler(req, res) {
       ...mapMessages(messages),
     ];
 
-    const latestUserContent = normalizeText(findLatestUserMessage(messages));
+    const latestUserMessage = findLatestUserMessage(messages);
+    const latestUserContent = normalizeText(latestUserMessage);
     const matchedEndpoint = endpoints.find((endpoint) => {
       if (!endpoint?.context) {
         return false;
@@ -149,7 +150,19 @@ export default async function handler(req, res) {
         {
           role: 'tool',
           name: 'callEndpoint',
-          content: JSON.stringify({ statusCode, data: responseData }),
+          content: JSON.stringify(
+            {
+              endpointId: matchedEndpoint.id,
+              endpointName: matchedEndpoint.name,
+              endpointUrl: matchedEndpoint.endpoint_url,
+              statusCode,
+              requestPayload: payloadToSend ?? null,
+              responseData,
+              userRequest: latestUserMessage,
+            },
+            null,
+            2
+          ),
         },
       ];
 
@@ -250,7 +263,19 @@ export default async function handler(req, res) {
         {
           role: 'tool',
           name: 'callEndpoint',
-          content: JSON.stringify({ statusCode, data: responseData }),
+          content: JSON.stringify(
+            {
+              endpointId: endpoint.id,
+              endpointName: endpoint.name,
+              endpointUrl: endpoint.endpoint_url,
+              statusCode,
+              requestPayload: payloadToSend ?? null,
+              responseData,
+              userRequest: latestUserMessage,
+            },
+            null,
+            2
+          ),
         },
       ];
 
