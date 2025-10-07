@@ -48,10 +48,18 @@ Caso prefira executar sem Docker, instale as dependências e rode o ambiente de 
 
 ```bash
 npm install
+
+# com o banco já configurado e o arquivo .env preenchido,
+# inicialize o servidor de desenvolvimento:
 npm run dev
 ```
 
-Certifique-se de que o Postgres esteja rodando localmente e que a variável `DATABASE_URL` esteja configurada.
+O comando `npm run dev` inicia o Next.js em modo de desenvolvimento na porta padrão `3000`. Antes disso, garanta que:
+
+1. O Postgres esteja ativo (pode ser via `docker compose up db -d` ou uma instância local).
+2. A variável `DATABASE_URL` e os demais valores do `.env` estejam corretamente preenchidos.
+
+Com o serviço de desenvolvimento rodando, acesse `http://localhost:3000` no navegador.
 
 ## Estrutura do banco
 
