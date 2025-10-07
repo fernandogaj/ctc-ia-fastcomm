@@ -135,13 +135,20 @@ export default async function handler(req, res) {
 
       const { statusCode, responseData } = await executeEndpoint(matchedEndpoint, payloadToSend);
 
+      const simulatedToolCallId = `auto-${matchedEndpoint.id}-${Date.now()}`;
       const simulatedFunctionCall = {
         role: 'assistant',
         content: null,
-        function_call: {
-          name: 'callEndpoint',
-          arguments: JSON.stringify({ endpointId: matchedEndpoint.id, useStoredPayload: true }),
-        },
+        tool_calls: [
+          {
+            id: simulatedToolCallId,
+            type: 'function',
+            function: {
+              name: 'callEndpoint',
+              arguments: JSON.stringify({ endpointId: matchedEndpoint.id, useStoredPayload: true }),
+            },
+          },
+        ],
       };
 
       const followUpMessages = [
@@ -149,7 +156,7 @@ export default async function handler(req, res) {
         simulatedFunctionCall,
         {
           role: 'tool',
-          name: 'callEndpoint',
+          tool_call_id: simulatedToolCallId,
           content: JSON.stringify(
             {
               endpointId: matchedEndpoint.id,
@@ -183,41 +190,53 @@ export default async function handler(req, res) {
       return;
     }
 
-    const functionDefinition = {
-      name: 'callEndpoint',
-      description: 'Executa uma chamada HTTP em um endpoint cadastrado',
-      parameters: {
-        type: 'object',
-        properties: {
-          endpointId: {
-            type: 'integer',
-            description: 'Identificador do endpoint disponível',
+    const toolDefinition = {
+      type: 'function',
+      function: {
+        name: 'callEndpoint',
+        description: 'Executa uma chamada HTTP em um endpoint cadastrado',
+        parameters: {
+          type: 'object',
+          properties: {
+            endpointId: {
+              type: 'integer',
+              description: 'Identificador do endpoint disponível',
+            },
+            payload: {
+              type: 'object',
+              description:
+                'Payload JSON customizado para a requisição. Se omitido, será usado o payload base.',
+            },
+            useStoredPayload: {
+              type: 'boolean',
+              description: 'Quando true, utiliza o payload base exatamente como salvo.',
+            },
           },
-          payload: {
-            type: 'object',
-            description: 'Payload JSON customizado para a requisição. Se omitido, será usado o payload base.',
-          },
-          useStoredPayload: {
-            type: 'boolean',
-            description: 'Quando true, utiliza o payload base exatamente como salvo.',
-          },
+          required: ['endpointId'],
         },
-        required: ['endpointId'],
       },
     };
 
     const initialCompletion = await openai.chat.completions.create({
       model: 'gpt-3.5-turbo-1106',
       messages: openAiMessages,
-      functions: [functionDefinition],
-      function_call: 'auto',
+      tools: [toolDefinition],
+      tool_choice: 'auto',
       temperature: 0.2,
     });
 
     const choice = initialCompletion.choices[0];
 
-    if (choice.finish_reason === 'function_call' && choice.message?.function_call) {
-      const { arguments: rawArgs, name } = choice.message.function_call;
+    const toolCall = choice.message?.tool_calls?.[0];
+    const legacyFunctionCall = choice.message?.function_call;
+    const isToolInvocation =
+      (choice.finish_reason === 'tool_calls' && toolCall) ||
+      (choice.finish_reason === 'function_call' && legacyFunctionCall);
+
+    if (isToolInvocation) {
+      const callId = toolCall?.id || `function-call-${Date.now()}`;
+      const name = toolCall?.function?.name || legacyFunctionCall?.name;
+      const rawArgs = toolCall?.function?.arguments || legacyFunctionCall?.arguments;
 
       if (name !== 'callEndpoint') {
         res.status(500).json({ error: 'Função desconhecida solicitada pela IA.' });
@@ -262,7 +281,7 @@ export default async function handler(req, res) {
         choice.message,
         {
           role: 'tool',
-          name: 'callEndpoint',
+          tool_call_id: callId,
           content: JSON.stringify(
             {
               endpointId: endpoint.id,
